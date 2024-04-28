@@ -2,7 +2,8 @@ import io
 import requests, json, re
 from bs4 import BeautifulSoup
 
-class Doctor():
+
+class Doctor:
     def __init__(self, name, specialty, doctoralia_url):
         self.name = name
         self.crm = ""
@@ -10,59 +11,107 @@ class Doctor():
         self.url = doctoralia_url
         self.service_addresses = []
 
-    def add_service_address(self, city, address):
-        self.service_addresses.append({
-            "city": city,
-            "address": address
-        })
+    def add_service_address(self, city, street_address):
+        self.service_addresses.append({"city": city, "street": street_address})
 
     def to_json(self):
         return json.dumps(self, default=lambda o: o.__dict__, sort_keys=True, indent=4)
 
-r = requests.get("https://www.doctoralia.com.br/pesquisa?q=Neurologista&loc=Itaquaquecetuba%2C%20SP&filters%5Bspecializations%5D%5B0%5D=60&page=1")
-soup = BeautifulSoup(r.text)
-doctors_page_list = soup.find(name="ul", attrs={"class": "list-unstyled search-list"})
 
-doctors_element_list = []
+class DoctorPage:
+    def __init__(self, doctor: Doctor):
+        self.__doctor = doctor
 
-for child in doctors_page_list.contents:
-    if child.name == "li":
-        doctors_element_list.append(child)
+    def process(self) -> Doctor:
+        response = requests.get(self.__doctor.url)
+        soup = BeautifulSoup(response.text)
 
-doctor_cards = []
+        doctor_register_element = soup.find(name="p", attrs={"class": "text-body mb-1"})
 
-for doctor_element in doctors_element_list:
-    for doctor_element_child in doctor_element.contents:
-        if doctor_element_child.name == "div":
-            doctor_cards.append(doctor_element_child)
+        doctor_register = re.match(
+            "CRM[\\s:]*(?P<local1>\\D{2})?[\\s]*(?P<crm>[\\d]+)[\\s-]*(?P<local2>\\w{2})?",
+            doctor_register_element.text.strip().replace("\t", "").replace("\n", ""),
+            re.IGNORECASE,
+        )
 
-doctors = []
+        if doctor_register:
+            local = doctor_register.group("local1")
+            crm = doctor_register.group("crm")
+            local = doctor_register.group("local2")
 
-for doctor_card in doctor_cards:
-    doctor_name = doctor_card["data-doctor-name"]
-    doctor_url = doctor_card["data-doctor-url"]
-    doctor_specialty = doctor_card["data-eecommerce-category"]
-    doctors.append(Doctor(doctor_name, doctor_specialty, doctor_url))
+        doctor_address_elements = soup.find_all(
+            name="h5", attrs={"class": "m-0 font-weight-normal"}
+        )
 
-for doctor in doctors:
-    doctor_page = requests.get(doctor.url)
+        for doctor_address_element in doctor_address_elements:
+            doctor_properties = {}
+            for child in doctor_address_element.children:
+                if child.name == "span":
+                    if child.attrs["itemprop"] == "streetAddress":
+                        for c in child.children:
+                            if c.name == "span":
+                                if (
+                                    c["data-test-id"]
+                                    and c["data-test-id"] == "address-info-street"
+                                ):
+                                    doctor_properties["addressStreet"] = c.text
+                                    break
+                    else:
+                        doctor_properties[child.attrs["itemprop"]] = child.attrs[
+                            "content"
+                        ]
 
-    soup = BeautifulSoup(doctor_page.text)
-    doctor_content_info = soup.find("div", attrs={"class": "media-body d-flex flex-column overflow-hidden"})
-    if doctor_content_info:
-        for child in doctor_content_info.contents:
-            if child.name == "div" and "text-muted" in child["class"] and "small" in child["class"]:
-                doctor.crm = re.search(r"crm:?[\s\D]*([\d]+)", child.text, re.I).group(1)
-                break
+                self.__doctor.add_service_address(
+                    doctor_properties["addressLocality"],
+                    doctor_properties["addressStreet"],
+                )
 
-    doctor_address_info = soup.find("div", attrs={"data-id": "address-tabs-content"})
-    
-    for child in doctor_address_info.contents[0]:
-        if child.name == "div" and child["itemprop"] == "address":
-            for child_2 in child.contents:
-                print("a")
 
+class DoctorListPage:
+    def __init__(self, html_content):
+        self.__content = html_content
+
+    def process(self) -> list[DoctorPage]:
+        soup = BeautifulSoup(self.__content)
+        doctor_list_element = soup.find(
+            name="ul", attrs={"class": "list-unstyled search-list"}
+        )
+
+        doctor_item_elements = []
+
+        for table_element_item in doctor_list_element.contents:
+            if table_element_item.name == "li":
+                for child in table_element_item.children:
+                    if child.name == "div":
+                        doctor_item_elements.append(child)
+
+        doctors_page = []
+
+        for doctor_card_element in doctor_item_elements:
+            doctor_name = doctor_card_element["data-doctor-name"]
+            doctor_url = doctor_card_element["data-doctor-url"]
+            doctor_specialty = doctor_card_element["data-eecommerce-category"]
+            doc = Doctor(doctor_name, doctor_specialty, doctor_url)
+            doctor_page = DoctorPage(doc)
+            doctors_page.append(doctor_page)
+
+        return doctors_page
+
+
+class SearchResultPage:
+    def __init__(self, speciality, localization):
+        self.__url = (
+            f"https://www.doctoralia.com.br/pesquisa?q={speciality}&loc={localization}"
+        )
+
+    def process(self) -> DoctorListPage:
+        response = requests.get(self.__url)
+        return DoctorListPage(response.text)
+
+
+doctor_list_page = SearchResultPage("Neurologista", "Itaquaquecetuba%2C%20SP").process()
+doctors_page = doctor_list_page.process()
+
+for doctor_page in doctors_page:
+    doctor = doctor_page.process()
     print(doctor.to_json())
-
-print("a")
-# io.open("teste.html", mode="w", encoding="utf-8").write(r.text)
