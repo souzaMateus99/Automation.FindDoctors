@@ -1,10 +1,41 @@
 import io
-import requests, json, re
+import json
+import re
+import urllib
+from enum import StrEnum, auto
+import urllib.parse
+
+import requests
 from bs4 import BeautifulSoup
 
 
+class EnumSpeciality(StrEnum):
+    Neurologista = auto()
+
+
+def factory_beautiful_soup(html_content: str) -> BeautifulSoup:
+    """Create BeautifulSoup object with the parameter 'features="html.parser"'
+
+    Args:
+        html_content (str): Sting with html content to send to BeautifulSoup object
+
+    Returns:
+        BeautifulSoup: BeautifulSoup object
+    """
+    return BeautifulSoup(html_content, features="html.parser")
+
+
 class Doctor:
+    """Doctor object"""
+
     def __init__(self, name, specialty, doctoralia_url):
+        """Doctor object
+
+        Args:
+            name (_type_): The doctor's name
+            specialty (_type_): The doctor's speciality
+            doctoralia_url (_type_): The doctor's url from 'doctoralia'
+        """
         self.name = name
         self.crm = ""
         self.specialty = specialty
@@ -24,20 +55,28 @@ class DoctorPage:
 
     def process(self) -> Doctor:
         response = requests.get(self.__doctor.url)
-        soup = BeautifulSoup(response.text)
+        soup = factory_beautiful_soup(response.text)
 
         doctor_register_element = soup.find(name="p", attrs={"class": "text-body mb-1"})
 
-        doctor_register = re.match(
-            "CRM[\\s:]*(?P<local1>\\D{2})?[\\s]*(?P<crm>[\\d]+)[\\s-]*(?P<local2>\\w{2})?",
-            doctor_register_element.text.strip().replace("\t", "").replace("\n", ""),
-            re.IGNORECASE,
-        )
+        if doctor_register_element:
+            doctor_register = re.search(
+                "CRM[\\s:]*(?P<local1>\\D{2})?[\\s]*(?P<crm>[\\d]+)[\\s-]*(?P<local2>\\w{2})?",
+                doctor_register_element.text.strip()
+                .replace("\t", "")
+                .replace("\n", ""),
+                re.IGNORECASE,
+            )
 
-        if doctor_register:
-            local = doctor_register.group("local1")
-            crm = doctor_register.group("crm")
-            local = doctor_register.group("local2")
+            if doctor_register:
+                local = (
+                    doctor_register.group("local1")
+                    if doctor_register.group("local1")
+                    else doctor_register.group("local2")
+                )
+                crm = doctor_register.group("crm")
+
+                self.__doctor.crm = crm = f"{crm} {local}"
 
         doctor_address_elements = soup.find_all(
             name="h5", attrs={"class": "m-0 font-weight-normal"}
@@ -61,10 +100,20 @@ class DoctorPage:
                             "content"
                         ]
 
-                self.__doctor.add_service_address(
-                    doctor_properties["addressLocality"],
-                    doctor_properties["addressStreet"],
-                )
+            self.__doctor.add_service_address(
+                (
+                    doctor_properties["addressLocality"]
+                    if doctor_properties.get("addressLocality")
+                    else ""
+                ),
+                (
+                    doctor_properties["addressStreet"]
+                    if doctor_properties.get("addressStreet")
+                    else ""
+                ),
+            )
+
+        return self.__doctor
 
 
 class DoctorListPage:
@@ -72,7 +121,7 @@ class DoctorListPage:
         self.__content = html_content
 
     def process(self) -> list[DoctorPage]:
-        soup = BeautifulSoup(self.__content)
+        soup = factory_beautiful_soup(self.__content)
         doctor_list_element = soup.find(
             name="ul", attrs={"class": "list-unstyled search-list"}
         )
@@ -99,19 +148,24 @@ class DoctorListPage:
 
 
 class SearchResultPage:
-    def __init__(self, speciality, localization):
-        self.__url = (
-            f"https://www.doctoralia.com.br/pesquisa?q={speciality}&loc={localization}"
-        )
+    def __init__(self, speciality: EnumSpeciality, localization):
+        spec = urllib.parse.quote(speciality.value)
+        local = urllib.parse.quote(localization)
+
+        self.__url = f"https://www.doctoralia.com.br/pesquisa?q={spec}&loc={local}"
 
     def process(self) -> DoctorListPage:
         response = requests.get(self.__url)
         return DoctorListPage(response.text)
 
 
-doctor_list_page = SearchResultPage("Neurologista", "Itaquaquecetuba%2C%20SP").process()
+doctor_list_page = SearchResultPage(
+    EnumSpeciality.Neurologista, "Itaquaquecetuba, SP"
+).process()
 doctors_page = doctor_list_page.process()
 
 for doctor_page in doctors_page:
     doctor = doctor_page.process()
-    print(doctor.to_json())
+    doctor.to_json()
+    with io.open("test.json", mode="a", encoding="utf-8") as file:
+        file.writelines(doctor.to_json())
