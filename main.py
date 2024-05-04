@@ -1,9 +1,9 @@
-import io
 import json
 import re
 import urllib
 from enum import StrEnum, auto
 import urllib.parse
+import pandas as pd
 
 import requests
 from bs4 import BeautifulSoup
@@ -45,8 +45,14 @@ class Doctor:
     def add_service_address(self, city, street_address):
         self.service_addresses.append({"city": city, "street": street_address})
 
-    def to_json(self):
-        return json.dumps(self, default=lambda o: o.__dict__, sort_keys=True, indent=4)
+    def get_doctor(self):
+        return {
+            "name": self.name,
+            "crm": self.crm,
+            "speciality": self.specialty,
+            "doctoralia_url": self.url,
+            "addresses": self.service_addresses,
+        }
 
 
 class DoctorPage:
@@ -164,8 +170,17 @@ doctor_list_page = SearchResultPage(
 ).process()
 doctors_page = doctor_list_page.process()
 
+doctors = []
+
 for doctor_page in doctors_page:
     doctor = doctor_page.process()
-    doctor.to_json()
-    with io.open("test.json", mode="a", encoding="utf-8") as file:
-        file.writelines(doctor.to_json())
+    doctors.append(doctor)
+
+dfs = []
+
+for doctor in doctors:
+    df = pd.DataFrame(doctor.get_doctor())
+    dfs.append(df)
+
+df_doctor = pd.concat(dfs)
+df_doctor.to_parquet("doctors.parquet", engine="pyarrow", compression="snappy")
